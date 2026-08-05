@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import Clinical3DViewer from '../components/Clinical3DViewer';
-import { uploadFile, detectImage } from '../services/api';
+import { uploadFile, detectImage, queryRAG } from '../services/api';
 
 const SUPPORTED_FORMATS = ['jpg', 'jpeg', 'png', 'dcm'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -21,6 +21,11 @@ const Dashboard = () => {
   const [detectionLoading, setDetectionLoading] = useState(false);
   const [detectionResults, setDetectionResults] = useState(null);
   const [detectionError, setDetectionError] = useState('');
+
+  // RAG state
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragResults, setRagResults] = useState(null);
+  const [ragError, setRagError] = useState('');
 
   // Generate rule-based clinical recommendations from detection results
   const generateClinicalRecommendations = (results) => {
@@ -195,6 +200,10 @@ const Dashboard = () => {
     setDetectionLoading(false);
     setDetectionResults(null);
     setDetectionError('');
+    // Also reset RAG state
+    setRagLoading(false);
+    setRagResults(null);
+    setRagError('');
   };
 
   // Detection handler
@@ -227,11 +236,37 @@ const Dashboard = () => {
         heatmap: data.heatmap,
         success: data.success,
       }));
+
+      // Auto-trigger RAG after detection completes
+      if (data.prediction) {
+        setTimeout(() => {
+          handleRAGQuery(data.prediction);
+        }, 500);
+      }
     } catch (err) {
       const errorMessage = err?.response?.data?.detail || 'Detection failed. Please try again.';
       setDetectionError(errorMessage);
     } finally {
       setDetectionLoading(false);
+    }
+  };
+
+  // RAG handler
+  const handleRAGQuery = async (query) => {
+    setRagLoading(true);
+    setRagError('');
+    setRagResults(null);
+
+    try {
+      const response = await queryRAG(query);
+      const { data } = response;
+      
+      setRagResults(data);
+    } catch (err) {
+      const errorMessage = err?.response?.data?.detail || 'Knowledge retrieval failed. Please try again.';
+      setRagError(errorMessage);
+    } finally {
+      setRagLoading(false);
     }
   };
 
@@ -753,6 +788,74 @@ const Dashboard = () => {
             <button className="w-full bg-medical-500 hover:bg-medical-600 text-white font-medium py-3 rounded-xl transition-colors">
               Get AI Insight
             </button>
+          </div>
+
+          {/* Medical Knowledge (RAG) */}
+          <div className="glass rounded-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-medical-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-white">Medical Knowledge</h2>
+                <p className="text-sm text-slate-400">Retrieved references</p>
+              </div>
+            </div>
+            
+            {/* Loading State */}
+            {ragLoading && (
+              <div className="space-y-3">
+                <div className="glass-light rounded-lg p-3 animate-pulse">
+                  <div className="h-4 bg-slate-700 rounded w-1/3 mb-2"></div>
+                  <div className="h-3 bg-slate-800 rounded w-full"></div>
+                </div>
+                <div className="glass-light rounded-lg p-3 animate-pulse">
+                  <div className="h-4 bg-slate-700 rounded w-1/3 mb-2"></div>
+                  <div className="h-3 bg-slate-800 rounded w-2/3"></div>
+                </div>
+              </div>
+            )}
+            
+            {/* Error State */}
+            {ragError && !ragLoading && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg p-3">
+                <p className="text-rose-300 text-sm">{ragError}</p>
+              </div>
+            )}
+            
+            {/* Results State */}
+            {ragResults && !ragLoading && (
+              <div className="space-y-3">
+                {ragResults.results && ragResults.results.length > 0 ? (
+                  ragResults.results.map((doc, index) => (
+                    <div key={index} className="glass-light rounded-lg p-3">
+                      <div className="flex items-start gap-2">
+                        <div className="w-6 h-6 rounded-full bg-medical-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-xs text-medical-500 font-medium">{index + 1}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-slate-400 mb-1">Relevance: {(doc.score * 100).toFixed(1)}%</p>
+                          <p className="text-sm text-white leading-relaxed line-clamp-3">{doc.content || doc.text}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="glass-light rounded-lg p-3 text-center">
+                    <p className="text-sm text-slate-400">No relevant medical references found.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Idle State */}
+            {!ragResults && !ragLoading && !ragError && (
+              <div className="glass-light rounded-lg p-3 text-center">
+                <p className="text-sm text-slate-400">Medical knowledge will appear after detection</p>
+              </div>
+            )}
           </div>
 
           {/* Report Download */}
