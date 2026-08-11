@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import Clinical3DViewer from '../components/Clinical3DViewer';
-import { uploadFile, detectImage, queryRAG } from '../services/api';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import Lung3DViewer from '../components/Lung3DViewer';
+import ErrorBoundary from '../components/ErrorBoundary';
+import { uploadFile, detectImage, queryRAG, askAssistant, downloadReport } from '../services/api';
 
 const SUPPORTED_FORMATS = ['jpg', 'jpeg', 'png', 'dcm'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -27,8 +28,62 @@ const Dashboard = () => {
   const [ragResults, setRagResults] = useState(null);
   const [ragError, setRagError] = useState('');
 
-  // Generate rule-based clinical recommendations from detection results
-  const generateClinicalRecommendations = (results) => {
+  // AI Assistant state
+  const [assistantQuery, setAssistantQuery] = useState('');
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantResponse, setAssistantResponse] = useState('');
+  const [assistantError, setAssistantError] = useState('');
+
+  // Load activeCase from localStorage on mount - REMOVED to prevent showing stale data
+  // const loadSavedCase = useCallback(() => {
+  //   const savedCase = localStorage.getItem('activeCase');
+  //   if (savedCase) {
+  //     try {
+  //       const parsedCase = JSON.parse(savedCase);
+  //       setActiveCase(parsedCase);
+  //       if (parsedCase.imageBase64) {
+  //         setPreviewUrl(parsedCase.imageBase64);
+  //       }
+  //       if (parsedCase.prediction) {
+  //         setDetectionResults({
+  //           prediction: parsedCase.prediction,
+  //           confidence: parsedCase.confidence,
+  //           severity: parsedCase.severity,
+  //           affected_organ: parsedCase.affectedOrgan,
+  //           processing_time: parsedCase.processingTime,
+  //           recommendations: parsedCase.recommendations,
+  //           ai_explanation: parsedCase.aiExplanation,
+  //           heatmap: parsedCase.heatmap,
+  //           highlight_left: parsedCase.highlightLeft,
+  //           highlight_right: parsedCase.highlightRight,
+  //           affected_region: parsedCase.affectedRegion,
+  //           success: parsedCase.success,
+  //         });
+  //       }
+  //     } catch (error) {
+  //       console.error('Failed to load saved case:', error);
+  //     }
+  //   }
+  // }, []);
+  
+  // useEffect(() => {
+  //   loadSavedCase();
+  // }, [loadSavedCase]);
+  
+  // Save activeCase to localStorage whenever it changes - debounced
+  useEffect(() => {
+    if (activeCase) {
+      const timeoutId = setTimeout(() => {
+        localStorage.setItem('activeCase', JSON.stringify(activeCase));
+      }, 300);
+      return () => clearTimeout(timeoutId);
+    } else {
+      localStorage.removeItem('activeCase');
+    }
+  }, [activeCase]);
+
+  // Generate rule-based clinical recommendations from detection results - memoized
+  const generateClinicalRecommendations = useCallback((results) => {
     if (!results || !results.prediction) return null;
 
     const prediction = results.prediction.toLowerCase();
@@ -65,7 +120,7 @@ const Dashboard = () => {
       lifestyle: 'Rest and adequate hydration',
       diagnostics: 'Follow-up imaging recommended',
     };
-  };
+  }, []);
 
   // File validation
   const validateFile = (file) => {
@@ -151,6 +206,16 @@ const Dashboard = () => {
       return;
     }
 
+    // Clear all previous data before new upload
+    setActiveCase(null);
+    setDetectionResults(null);
+    setDetectionError('');
+    setRagResults(null);
+    setRagError('');
+    setAssistantResponse('');
+    setAssistantError('');
+    localStorage.removeItem('activeCase');
+
     setUploadStatus('uploading');
     setUploadProgress(0);
     setUploadError('');
@@ -196,14 +261,26 @@ const Dashboard = () => {
     setUploadStatus('idle');
     setUploadError('');
     setUploadedCaseId(null);
-    // Also reset detection state
+    
+    // Clear all detection data
+    setActiveCase(null);
     setDetectionLoading(false);
     setDetectionResults(null);
     setDetectionError('');
-    // Also reset RAG state
+    
+    // Clear RAG data
     setRagLoading(false);
     setRagResults(null);
     setRagError('');
+    
+    // Clear AI Assistant data
+    setAssistantQuery('');
+    setAssistantLoading(false);
+    setAssistantResponse('');
+    setAssistantError('');
+    
+    // Clear localStorage
+    localStorage.removeItem('activeCase');
   };
 
   // Detection handler
@@ -234,6 +311,9 @@ const Dashboard = () => {
         recommendations: data.recommendations,
         aiExplanation: data.ai_explanation,
         heatmap: data.heatmap,
+        highlightLeft: data.highlight_left,
+        highlightRight: data.highlight_right,
+        affectedRegion: data.affected_region,
         success: data.success,
       }));
 
@@ -267,6 +347,56 @@ const Dashboard = () => {
       setRagError(errorMessage);
     } finally {
       setRagLoading(false);
+    }
+  };
+
+  // AI Assistant handler
+  const handleAssistantQuery = async () => {
+    if (!assistantQuery.trim()) {
+      setAssistantError('Please enter a question');
+      return;
+    }
+
+    setAssistantLoading(true);
+    setAssistantError('');
+    setAssistantResponse('');
+
+    try {
+      const response = await askAssistant({
+        query: assistantQuery,
+        diseasePrediction: detectionResults?.prediction || 'Unknown',
+        confidence: detectionResults?.confidence || 0,
+      });
+      const { data } = response;
+      
+      setAssistantResponse(data.response || 'No response received');
+    } catch (err) {
+      const errorMessage = err?.response?.data?.detail || 'AI Assistant failed. Please try again.';
+      setAssistantError(errorMessage);
+    } finally {
+      setAssistantLoading(false);
+    }
+  };
+
+  // Report download handler
+  const handleReportDownload = async () => {
+    if (!activeCase?.caseId) {
+      alert('Please upload and analyze an image first.');
+      return;
+    }
+
+    try {
+      const response = await downloadReport(activeCase.caseId);
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `medical_report_${activeCase.caseId}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Failed to download report. Please try again.');
     }
   };
 
@@ -333,15 +463,22 @@ const Dashboard = () => {
             ) : (
               <div className="space-y-4">
                 {/* Image Preview */}
-                <div className="relative rounded-xl overflow-hidden bg-slate-900/50">
-                  <img
-                    src={previewUrl}
-                    alt="Preview"
-                    className="w-full h-48 object-cover"
-                  />
+                <div className="relative">
+                  <div className="rounded-xl overflow-hidden bg-slate-900/50">
+                    <img
+                      src={previewUrl}
+                      alt="Original X-ray"
+                      className="w-full h-32 object-cover"
+                    />
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1">
+                      <p className="text-xs text-white">Original X-ray</p>
+                    </div>
+                  </div>
+                  
+                  {/* Reset Button */}
                   <button
                     onClick={handleReset}
-                    className="absolute top-2 right-2 bg-rose-500 hover:bg-rose-600 text-white p-2 rounded-lg transition-colors"
+                    className="absolute top-2 right-2 bg-rose-500 hover:bg-rose-600 text-white p-2 rounded-lg transition-colors z-10"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -478,7 +615,7 @@ const Dashboard = () => {
                 <div className="glass-light rounded-xl p-4">
                   <p className="text-sm text-slate-400">Confidence</p>
                   <p className="text-medical-500 font-medium mt-1">
-                    {detectionResults.confidence ? `${(detectionResults.confidence * 100).toFixed(1)}%` : '--'}
+                    {detectionResults.confidence ? `${detectionResults.confidence}%` : '--'}
                   </p>
                 </div>
                 
@@ -513,31 +650,6 @@ const Dashboard = () => {
                     <p className="text-white font-medium mt-1 text-sm leading-relaxed">{detectionResults.ai_explanation}</p>
                   </div>
                 )}
-                
-                {/* Recommendations */}
-                {detectionResults.recommendations && detectionResults.recommendations.length > 0 && (
-                  <div className="glass-light rounded-xl p-4">
-                    <p className="text-sm text-slate-400">Recommendations</p>
-                    <ul className="mt-2 space-y-2">
-                      {detectionResults.recommendations.map((rec, index) => (
-                        <li key={index} className="text-sm text-white flex items-start gap-2">
-                          <span className="text-medical-500 mt-1">•</span>
-                          <span>{rec}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                
-                {/* Heatmap Preview */}
-                {detectionResults.heatmap && (
-                  <div className="glass-light rounded-xl p-4">
-                    <p className="text-sm text-slate-400">Heatmap Preview</p>
-                    <div className="mt-2 rounded-lg overflow-hidden bg-slate-900/50">
-                      <img src={detectionResults.heatmap} alt="Heatmap" className="w-full h-32 object-cover" />
-                    </div>
-                  </div>
-                )}
               </div>
             )}
             
@@ -557,7 +669,30 @@ const Dashboard = () => {
             )}
           </div>
 
-          {/* Recommendations */}
+
+        </div>
+
+        {/* Center Column - 3D Viewer (Full Width) */}
+        <div className="lg:col-span-5 space-y-6">
+          {/* 3D Anatomy Viewer */}
+          <div className="glass rounded-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-medical-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-white">3D Anatomy Viewer</h2>
+                <p className="text-sm text-slate-400">Interactive visualization</p>
+              </div>
+            </div>
+            <div className="h-[500px] rounded-xl overflow-hidden bg-slate-900/50">
+              <Lung3DViewer activeCase={activeCase} />
+            </div>
+          </div>
+
+          {/* Clinical Recommendations */}
           <div className="glass rounded-2xl p-6">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
@@ -738,27 +873,6 @@ const Dashboard = () => {
               </div>
             )}
           </div>
-
-        </div>
-
-        {/* Center Column - Large 3D Viewer */}
-        <div className="lg:col-span-5">
-          <div className="glass rounded-2xl p-6 h-full">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
-                <svg className="w-5 h-5 text-medical-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" />
-                </svg>
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-white">3D Anatomy Viewer</h2>
-                <p className="text-sm text-slate-400">Interactive visualization</p>
-              </div>
-            </div>
-            <div className="h-[500px] rounded-xl overflow-hidden bg-slate-900/50">
-              <Clinical3DViewer activeCase={activeCase} />
-            </div>
-          </div>
         </div>
 
         {/* Right Column - AI Assistant & Report */}
@@ -783,10 +897,44 @@ const Dashboard = () => {
                 className="w-full mt-2 bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-medical-500 resize-none"
                 rows={3}
                 placeholder="Enter your clinical question..."
+                value={assistantQuery}
+                onChange={(e) => setAssistantQuery(e.target.value)}
               />
             </div>
-            <button className="w-full bg-medical-500 hover:bg-medical-600 text-white font-medium py-3 rounded-xl transition-colors">
-              Get AI Insight
+            
+            {/* Error Message */}
+            {assistantError && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 mb-4">
+                <p className="text-rose-300 text-sm">{assistantError}</p>
+              </div>
+            )}
+            
+            {/* Loading State */}
+            {assistantLoading && (
+              <div className="glass-light rounded-lg p-3 mb-4 animate-pulse">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-medical-500 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-medical-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                  <div className="w-2 h-2 bg-medical-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                  <span className="text-sm text-slate-400 ml-2">Generating AI response...</span>
+                </div>
+              </div>
+            )}
+            
+            {/* Response Display */}
+            {assistantResponse && !assistantLoading && (
+              <div className="glass-light rounded-lg p-3 mb-4">
+                <p className="text-sm text-slate-400 mb-2">AI Response:</p>
+                <p className="text-sm text-white leading-relaxed">{assistantResponse}</p>
+              </div>
+            )}
+            
+            <button 
+              onClick={handleAssistantQuery}
+              disabled={assistantLoading}
+              className="w-full bg-medical-500 hover:bg-medical-600 disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-medium py-3 rounded-xl transition-colors"
+            >
+              {assistantLoading ? 'Processing...' : 'Get AI Insight'}
             </button>
           </div>
 
@@ -829,19 +977,39 @@ const Dashboard = () => {
             {ragResults && !ragLoading && (
               <div className="space-y-3">
                 {ragResults.results && ragResults.results.length > 0 ? (
-                  ragResults.results.map((doc, index) => (
-                    <div key={index} className="glass-light rounded-lg p-3">
-                      <div className="flex items-start gap-2">
-                        <div className="w-6 h-6 rounded-full bg-medical-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                          <span className="text-xs text-medical-500 font-medium">{index + 1}</span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-slate-400 mb-1">Relevance: {(doc.score * 100).toFixed(1)}%</p>
-                          <p className="text-sm text-white leading-relaxed line-clamp-3">{doc.content || doc.text}</p>
+                  ragResults.results.slice(0, 4).map((doc, index) => {
+                    // Extract different sections from the content
+                    const content = doc.content || doc.text || '';
+                    const lines = content.split('\n').filter(line => line.trim());
+                    
+                    // Categorize content based on index to show diverse information
+                    const categories = [
+                      { title: 'Disease Overview', icon: '📋' },
+                      { title: 'Causes & Risk Factors', icon: '⚠️' },
+                      { title: 'Symptoms', icon: '🩺' },
+                      { title: 'Diagnosis & Treatment', icon: '💊' }
+                    ];
+                    
+                    const category = categories[index] || { title: 'Medical Information', icon: '📄' };
+                    const relevantLines = lines.slice(index * 3, (index * 3) + 3).join(' • ');
+                    
+                    return (
+                      <div key={index} className="glass-light rounded-lg p-3">
+                        <div className="flex items-start gap-2">
+                          <div className="w-6 h-6 rounded-full bg-medical-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                            <span className="text-xs">{category.icon}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-medical-500 font-medium mb-1">{category.title}</p>
+                            <p className="text-sm text-white leading-relaxed line-clamp-2">
+                              {relevantLines || content.substring(0, 150)}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1">Relevance: {(doc.score * 100).toFixed(1)}%</p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="glass-light rounded-lg p-3 text-center">
                     <p className="text-sm text-slate-400">No relevant medical references found.</p>
@@ -873,29 +1041,85 @@ const Dashboard = () => {
             </div>
             <div className="glass-light rounded-xl p-4 mb-4">
               <p className="text-sm text-slate-400">Report Status</p>
-              <p className="text-white font-medium mt-1">Ready to generate</p>
+              <p className="text-white font-medium mt-1">{activeCase ? 'Ready to generate' : 'Upload an image first'}</p>
             </div>
-            <button className="w-full bg-medical-500 hover:bg-medical-600 text-white font-medium py-3 rounded-xl transition-colors">
+            <button 
+              onClick={handleReportDownload}
+              className="w-full bg-medical-500 hover:bg-medical-600 text-white font-medium py-3 rounded-xl transition-colors"
+              disabled={!activeCase}
+            >
               Download PDF
             </button>
           </div>
 
-          {/* Quick Stats */}
-          <div className="glass-accent rounded-2xl p-6">
-            <h3 className="text-sm font-semibold text-medical-500 mb-3">Quick Stats</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400">Total Cases</span>
-                <span className="text-white font-medium">0</span>
+          {/* Recommendations and Grad-CAM Heatmap Cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Recommendations Card */}
+            <div className="glass rounded-2xl p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
+                  <svg className="w-5 h-5 text-medical-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Recommendations</h2>
+                  <p className="text-sm text-slate-400">Treatment guidance</p>
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400">Reports Generated</span>
-                <span className="text-white font-medium">0</span>
+              
+              {detectionResults && !detectionLoading && detectionResults.recommendations && detectionResults.recommendations.length > 0 ? (
+                <div className="space-y-3">
+                  {detectionResults.recommendations.map((rec, index) => (
+                    <div key={index} className="glass-light rounded-lg p-3 flex items-start gap-2">
+                      <span className="text-medical-500 mt-1">•</span>
+                      <span className="text-sm text-white">{rec}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">
+                  Upload a chest X-ray to generate recommendations.
+                </div>
+              )}
+            </div>
+
+            {/* Grad-CAM Heatmap Card */}
+            <div className="glass rounded-2xl p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-medical-500/20 flex items-center justify-center">
+                  <svg className="w-5 h-5 text-medical-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Grad-CAM Heatmap</h2>
+                  <p className="text-sm text-slate-400">AI attention regions</p>
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400">Avg Confidence</span>
-                <span className="text-medical-500 font-medium">--</span>
-              </div>
+              
+              {detectionResults && !detectionLoading && detectionResults.heatmap ? (
+                <div className="rounded-lg overflow-hidden bg-slate-900/50">
+                  <img 
+                    src={`data:image/png;base64,${detectionResults.heatmap}`} 
+                    alt="Grad-CAM Heatmap" 
+                    className="w-full h-auto object-cover"
+                  />
+                  {detectionResults.affected_region && (
+                    <p className="text-xs text-medical-500 mt-2 px-2">
+                      Affected: {detectionResults.affected_region}
+                    </p>
+                  )}
+                </div>
+              ) : detectionLoading ? (
+                <div className="glass-light rounded-lg p-4 animate-pulse">
+                  <div className="h-32 bg-slate-700 rounded"></div>
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">
+                  Upload a chest X-ray to generate AI attention regions.
+                </div>
+              )}
             </div>
           </div>
 
