@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -8,6 +9,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from ..config import logger, settings
+from ..ai.inference import validate_lung_xray_image
 from ..database.connection import SessionLocal
 from ..database.models import CaseRecord
 from ..schemas import HealthResponse, UploadResponse
@@ -47,6 +49,12 @@ def upload_file(file: UploadFile = File(...)) -> UploadResponse:
     if len(contents) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds 10MB limit")
 
+    if not validate_lung_xray_image(contents):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid image. Please upload a valid lung/chest X-ray.",
+        )
+
     unique_name = f"{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
     destination_path = upload_dir / unique_name
 
@@ -66,7 +74,7 @@ def upload_file(file: UploadFile = File(...)) -> UploadResponse:
             case_id=unique_name.replace(Path(unique_name).suffix, ""),
             filename=unique_name,
             filepath=str(destination_path),
-            case_metadata={"original_name": file.filename},
+            case_metadata=json.dumps({"original_name": file.filename}),
         )
         db.add(case_record)
         db.commit()

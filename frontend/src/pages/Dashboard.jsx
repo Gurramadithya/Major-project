@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Lung3DViewer from '../components/Lung3DViewer';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { uploadFile, detectImage, queryRAG, askAssistant, downloadReport } from '../services/api';
@@ -8,6 +8,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const Dashboard = () => {
   const [activeCase, setActiveCase] = useState(null);
+  const requestIdRef = useRef(0);
   
   // Upload state
   const [selectedFile, setSelectedFile] = useState(null);
@@ -70,55 +71,73 @@ const Dashboard = () => {
   //   loadSavedCase();
   // }, [loadSavedCase]);
   
-  // Save activeCase to localStorage whenever it changes - debounced
+  // Keep both storage keys synchronized so the current case is never stale.
   useEffect(() => {
     if (activeCase) {
       const timeoutId = setTimeout(() => {
         localStorage.setItem('activeCase', JSON.stringify(activeCase));
+        localStorage.setItem('latestCase', JSON.stringify(activeCase));
       }, 300);
       return () => clearTimeout(timeoutId);
-    } else {
-      localStorage.removeItem('activeCase');
     }
+
+    localStorage.removeItem('activeCase');
+    localStorage.removeItem('latestCase');
   }, [activeCase]);
 
   // Generate rule-based clinical recommendations from detection results - memoized
   const generateClinicalRecommendations = useCallback((results) => {
     if (!results || !results.prediction) return null;
 
-    const prediction = results.prediction.toLowerCase();
-    const confidence = results.confidence || 0;
-    const severity = results.severity?.toLowerCase() || 'unknown';
+    const prediction = String(results.prediction || 'Normal');
+    const predictionKey = prediction.toLowerCase();
+    const confidenceValue = Number(results.confidence || 0);
+    const confidencePct = confidenceValue <= 1 ? confidenceValue * 100 : confidenceValue;
+    const severity = String(results.severity || 'Unknown').toLowerCase();
+    const region = String(results.affected_region || 'Bilateral Lung');
+    const isNormal = predictionKey === 'normal';
 
-    // Rule-based mapping
-    const specialistMap = {
-      'pulmonary': 'Pulmonologist',
-      'lung': 'Pulmonologist',
-      'pneumonia': 'Pulmonologist',
-      'cardiac': 'Cardiologist',
-      'heart': 'Cardiologist',
-      'bone': 'Orthopedist',
-      'skeletal': 'Orthopedist',
-      'fracture': 'Orthopedist',
-    };
+    const specialist = predictionKey.includes('pneumonia')
+      ? 'Pulmonologist'
+      : predictionKey.includes('effusion')
+        ? 'Pulmonologist'
+        : predictionKey.includes('cardio') || predictionKey.includes('heart')
+          ? 'Cardiologist'
+          : 'General Physician';
 
-    const specialist = specialistMap[prediction] || 'General Physician';
-    
-    const urgencyLevel = confidence > 0.8 ? 'High' : confidence > 0.5 ? 'Medium' : 'Low';
-    const riskLevel = severity === 'severe' ? 'High' : severity === 'moderate' ? 'Medium' : 'Low';
-    const hospitalization = riskLevel === 'High' ? 'Yes' : 'No';
-    const followUp = riskLevel === 'High' ? '24-48 hours' : riskLevel === 'Medium' ? '1 week' : '2 weeks';
+    const urgencyLevel = isNormal
+      ? 'Routine'
+      : confidencePct >= 85 ? 'High' : confidencePct >= 65 ? 'Medium' : 'Low';
+    const riskLevel = isNormal
+      ? 'Low'
+      : severity.includes('critical') || confidencePct >= 90
+        ? 'High'
+        : severity.includes('moderate') || confidencePct >= 70
+          ? 'Medium'
+          : 'Low';
+
+    const regionDescription = region && region.toLowerCase() !== 'no dominant lung region'
+      ? ` in the ${region.toLowerCase()}`
+      : ' in the lungs';
 
     return {
       specialist,
       urgencyLevel,
       riskLevel,
-      hospitalization,
-      followUp,
-      treatment: 'Conservative management with monitoring',
-      medication: 'Symptomatic treatment as needed',
-      lifestyle: 'Rest and adequate hydration',
-      diagnostics: 'Follow-up imaging recommended',
+      hospitalization: riskLevel === 'High' ? 'Yes' : 'No',
+      followUp: isNormal ? 'Routine clinical follow-up if symptoms persist' : confidencePct >= 85 ? '48-72 hours' : '1-2 weeks',
+      treatment: isNormal
+        ? 'No acute radiographic abnormality is suggested on this image.'
+        : `Clinical evaluation is recommended for suspected ${prediction.toLowerCase()}${regionDescription}.`,
+      medication: isNormal
+        ? 'No image-based medication recommendation is indicated.'
+        : 'Start or adjust treatment only after formal clinical assessment and clinician guidance.',
+      lifestyle: isNormal
+        ? 'Maintain routine wellness and reassess if symptoms develop.'
+        : 'Rest, hydrate, monitor respiratory symptoms, and seek prompt evaluation if symptoms worsen.',
+      diagnostics: isNormal
+        ? 'Routine clinical correlation is suitable if symptoms are present.'
+        : 'Correlate this image with the patient history and consider targeted follow-up imaging if clinically indicated.',
     };
   }, []);
 
@@ -206,6 +225,8 @@ const Dashboard = () => {
       return;
     }
 
+    const currentRequestId = ++requestIdRef.current;
+
     // Clear all previous data before new upload
     setActiveCase(null);
     setDetectionResults(null);
@@ -215,6 +236,7 @@ const Dashboard = () => {
     setAssistantResponse('');
     setAssistantError('');
     localStorage.removeItem('activeCase');
+    localStorage.removeItem('latestCase');
 
     setUploadStatus('uploading');
     setUploadProgress(0);
@@ -226,6 +248,9 @@ const Dashboard = () => {
       });
       
       const { data } = response;
+      if (currentRequestId !== requestIdRef.current) {
+        return;
+      }
       setUploadedCaseId(data.case_id);
       setUploadStatus('success');
       
@@ -239,6 +264,9 @@ const Dashboard = () => {
       
       // Auto-trigger detection after successful upload
       setTimeout(() => {
+        if (currentRequestId !== requestIdRef.current) {
+          return;
+        }
         handleDetection(selectedFile, data.case_id);
       }, 500);
       
@@ -255,6 +283,7 @@ const Dashboard = () => {
 
   // Reset upload
   const handleReset = () => {
+    requestIdRef.current += 1;
     setSelectedFile(null);
     setPreviewUrl('');
     setUploadProgress(0);
@@ -279,12 +308,15 @@ const Dashboard = () => {
     setAssistantResponse('');
     setAssistantError('');
     
-    // Clear localStorage
+    // Clear all localStorage case data so stale outputs are never shown.
     localStorage.removeItem('activeCase');
+    localStorage.removeItem('latestCase');
   };
 
   // Detection handler
   const handleDetection = async (file, caseId) => {
+    const currentRequestId = ++requestIdRef.current;
+
     // Prevent duplicate requests
     if (detectionLoading) {
       return;
@@ -297,25 +329,44 @@ const Dashboard = () => {
     try {
       const response = await detectImage(file, caseId);
       const { data } = response;
+      if (currentRequestId !== requestIdRef.current) {
+        return;
+      }
       
       setDetectionResults(data);
-      
-      // Update active case with detection results
-      setActiveCase(prev => ({
-        ...prev,
+      const detectionCase = {
+        caseId: caseId,
         prediction: data.prediction,
         confidence: data.confidence,
         severity: data.severity,
+        affected_organ: data.affected_organ,
         affectedOrgan: data.affected_organ,
+        processing_time: data.processing_time,
         processingTime: data.processing_time,
-        recommendations: data.recommendations,
+        recommendations: data.recommendations || [],
+        findings: data.findings || [],
+        ai_explanation: data.ai_explanation,
         aiExplanation: data.ai_explanation,
         heatmap: data.heatmap,
+        highlight_left: data.highlight_left,
         highlightLeft: data.highlight_left,
+        highlight_right: data.highlight_right,
         highlightRight: data.highlight_right,
+        affected_region: data.affected_region,
         affectedRegion: data.affected_region,
+        visualization_mode: data.visualization_mode,
+        visualizationMode: data.visualization_mode,
         success: data.success,
-      }));
+      };
+
+      const nextCase = {
+        ...(activeCase || {}),
+        ...detectionCase,
+      };
+      setActiveCase(nextCase);
+
+      localStorage.setItem('activeCase', JSON.stringify(nextCase));
+      localStorage.setItem('latestCase', JSON.stringify(nextCase));
 
       // Auto-trigger RAG after detection completes
       if (data.prediction) {
@@ -357,6 +408,12 @@ const Dashboard = () => {
       return;
     }
 
+    // Check if detection results are available
+    if (!detectionResults || !detectionResults.prediction) {
+      setAssistantError('Please upload and analyze an image first before asking questions.');
+      return;
+    }
+
     setAssistantLoading(true);
     setAssistantError('');
     setAssistantResponse('');
@@ -364,14 +421,15 @@ const Dashboard = () => {
     try {
       const response = await askAssistant({
         query: assistantQuery,
-        diseasePrediction: detectionResults?.prediction || 'Unknown',
-        confidence: detectionResults?.confidence || 0,
+        diseasePrediction: detectionResults.prediction || 'Unknown',
+        confidence: detectionResults.confidence || 0,
       });
       const { data } = response;
       
       setAssistantResponse(data.response || 'No response received');
     } catch (err) {
-      const errorMessage = err?.response?.data?.detail || 'AI Assistant failed. Please try again.';
+      console.error('AI Assistant error:', err);
+      const errorMessage = err?.response?.data?.detail || err?.message || 'AI Assistant failed. Please try again.';
       setAssistantError(errorMessage);
     } finally {
       setAssistantLoading(false);
@@ -387,7 +445,14 @@ const Dashboard = () => {
 
     try {
       const response = await downloadReport(activeCase.caseId);
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      
+      // Check if response has data
+      if (!response || !response.data) {
+        throw new Error('No data received from server');
+      }
+      
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', `medical_report_${activeCase.caseId}.pdf`);
@@ -396,7 +461,8 @@ const Dashboard = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert('Failed to download report. Please try again.');
+      console.error('Report download error:', err);
+      alert(`Failed to download report: ${err?.message || 'Please try again.'}`);
     }
   };
 
@@ -615,7 +681,11 @@ const Dashboard = () => {
                 <div className="glass-light rounded-xl p-4">
                   <p className="text-sm text-slate-400">Confidence</p>
                   <p className="text-medical-500 font-medium mt-1">
-                    {detectionResults.confidence ? `${detectionResults.confidence}%` : '--'}
+                    {(() => {
+                      const value = Number(detectionResults.confidence || 0);
+                      const normalized = value <= 1 ? value * 100 : value;
+                      return Number.isFinite(normalized) ? `${normalized.toFixed(1)}%` : '--';
+                    })()}
                   </p>
                 </div>
                 
@@ -628,7 +698,7 @@ const Dashboard = () => {
                 {/* Affected Region */}
                 <div className="glass-light rounded-xl p-4">
                   <p className="text-sm text-slate-400">Affected Region</p>
-                  <p className="text-white font-medium mt-1 capitalize">{detectionResults.affected_organ || 'Unknown'}</p>
+                  <p className="text-white font-medium mt-1 capitalize">{detectionResults.affected_region || detectionResults.affected_organ || 'Unknown'}</p>
                 </div>
                 
                 {/* Inference Time */}
@@ -642,6 +712,18 @@ const Dashboard = () => {
                   <p className="text-sm text-slate-400">Model Used</p>
                   <p className="text-white font-medium mt-1">EfficientNet-B0 (Lightweight)</p>
                 </div>
+
+                {/* Key Findings */}
+                {Array.isArray(detectionResults.findings) && detectionResults.findings.length > 0 && (
+                  <div className="glass-light rounded-xl p-4">
+                    <p className="text-sm text-slate-400">Key Findings</p>
+                    <ul className="mt-2 space-y-2 text-sm text-white leading-relaxed list-disc list-inside">
+                      {detectionResults.findings.slice(0, 3).map((finding, index) => (
+                        <li key={`${finding}-${index}`}>{finding}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 
                 {/* Clinical Summary */}
                 {detectionResults.ai_explanation && (

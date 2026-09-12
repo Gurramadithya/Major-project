@@ -92,6 +92,17 @@ def startup_event() -> None:
 
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Pre-load the detection model
+    try:
+        from .ai.services import DetectionService
+        detection_service = DetectionService()
+        detection_service._load_inference()
+        logger.info("Detection model loaded successfully on startup")
+    except FileNotFoundError:
+        logger.warning("Detection model not found. Please run training script first.")
+    except Exception as e:
+        logger.error(f"Failed to load detection model on startup: {e}")
 
 
 @app.get("/")

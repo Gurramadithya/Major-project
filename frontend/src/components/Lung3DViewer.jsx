@@ -4,9 +4,16 @@ import { OrbitControls, useGLTF } from '@react-three/drei';
 import { useRef, useState, Suspense, useMemo, useCallback } from 'react';
 import * as THREE from 'three';
 
-const LungModel = () => {
+const LungModel = ({ 
+  highlightLeft = false, 
+  highlightRight = false, 
+  prediction = 'Normal',
+  showHighlight = true,
+  pulseEffect = true
+}) => {
   const groupRef = useRef();
   const initializedRef = useRef(false);
+  const highlightMeshRef = useRef(null);
   
   const gltf = useGLTF('/models/lungs.glb');
   const scene = gltf.scene;
@@ -32,6 +39,70 @@ const LungModel = () => {
       }
     });
   }
+  
+  // Create or update highlight sphere
+  React.useEffect(() => {
+    // Remove existing highlight
+    if (highlightMeshRef.current) {
+      groupRef.current?.remove(highlightMeshRef.current);
+      highlightMeshRef.current.geometry.dispose();
+      highlightMeshRef.current.material.dispose();
+      highlightMeshRef.current = null;
+    }
+    
+    // Only add highlight for abnormal predictions
+    if (!showHighlight || !prediction || prediction.toLowerCase() === 'normal') {
+      return;
+    }
+    
+    // Determine highlight position based on region
+    let highlightPosition = new THREE.Vector3(0, 0, 0);
+    let highlightScale = 0.3;
+    
+    if (highlightLeft && highlightRight) {
+      // Bilateral - center
+      highlightPosition.set(0, 0.2, 0.4);
+      highlightScale = 0.4;
+    } else if (highlightLeft) {
+      // Left lung
+      highlightPosition.set(-0.4, 0.1, 0.3);
+      highlightScale = 0.35;
+    } else if (highlightRight) {
+      // Right lung
+      highlightPosition.set(0.4, 0.1, 0.3);
+      highlightScale = 0.35;
+    } else {
+      // Default to bilateral if no specific region
+      highlightPosition.set(0, 0.2, 0.4);
+      highlightScale = 0.4;
+    }
+    
+    // Create glowing sphere
+    const sphereGeometry = new THREE.SphereGeometry(1, 32, 32);
+    const sphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff0000,
+      transparent: true,
+      opacity: 0.6,
+    });
+    
+    const highlightSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    highlightSphere.position.copy(highlightPosition);
+    highlightSphere.scale.set(highlightScale, highlightScale, highlightScale);
+    
+    // Add to group so it rotates with the lung
+    if (groupRef.current) {
+      groupRef.current.add(highlightSphere);
+      highlightMeshRef.current = highlightSphere;
+    }
+    
+    return () => {
+      if (highlightMeshRef.current) {
+        groupRef.current?.remove(highlightMeshRef.current);
+        highlightMeshRef.current.geometry.dispose();
+        highlightMeshRef.current.material.dispose();
+      }
+    };
+  }, [highlightLeft, highlightRight, prediction, showHighlight]);
 
   return (
     <group ref={groupRef}>
@@ -88,13 +159,31 @@ class CanvasErrorBoundary extends React.Component {
 const Lung3DViewer = ({ 
   activeCase, 
   autoRotate = true,
-  enableControls = true 
+  enableControls = true,
+  showHighlight = true,
+  pulseEffect = true
 }) => {
   const controlsRef = useRef();
   
   const shouldShowModel = useMemo(() => {
     return activeCase && activeCase.prediction && activeCase.success !== false;
   }, [activeCase]);
+  
+  const regionKey = (activeCase?.affected_region || activeCase?.affectedRegion || 'Bilateral Lung').toLowerCase();
+  const prediction = activeCase?.prediction || 'Normal';
+  const isAbnormal = prediction && prediction.toLowerCase() !== 'normal';
+  const shouldHighlightBoth = regionKey.includes('bilateral') || regionKey.includes('both') || regionKey.includes('lung') && !regionKey.includes('left') && !regionKey.includes('right');
+  const highlightLeft = isAbnormal
+    ? (activeCase?.highlightLeft ?? activeCase?.highlight_left ?? (
+        regionKey.includes('left') || shouldHighlightBoth
+      ))
+    : false;
+  const highlightRight = isAbnormal
+    ? (activeCase?.highlightRight ?? activeCase?.highlight_right ?? (
+        regionKey.includes('right') || shouldHighlightBoth
+      ))
+    : false;
+  const displayRegion = activeCase?.affected_region || activeCase?.affectedRegion || 'Bilateral Lung';
 
   if (!shouldShowModel) {
     return (
@@ -120,23 +209,33 @@ const Lung3DViewer = ({
     <div className="relative w-full h-full bg-slate-900/50 rounded-xl overflow-hidden">
       <CanvasErrorBoundary>
         <Canvas
-          camera={{ position: [0, 0, 4], fov: 50 }}
-          gl={{ antialias: true, powerPreference: 'high-performance' }}
+          camera={{ position: [0, 0, 5], fov: 45 }}
+          gl={{ antialias: true, powerPreference: 'high-performance', alpha: true }}
           dpr={[1, 2]}
+          style={{ width: '100%', height: '100%' }}
         >
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[5, 5, 5]} intensity={1} />
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[10, 10, 5]} intensity={1.2} />
+          <pointLight position={[-10, -10, -5]} intensity={0.5} />
           <Suspense fallback={null}>
-            <MemoizedLungModel />
+            <MemoizedLungModel 
+              highlightLeft={highlightLeft}
+              highlightRight={highlightRight}
+              prediction={prediction}
+              showHighlight={showHighlight}
+              pulseEffect={pulseEffect}
+            />
           </Suspense>
           {enableControls && (
             <OrbitControls
               ref={controlsRef}
-              enablePan
-              enableZoom
-              enableRotate
+              enablePan={true}
+              enableZoom={true}
+              enableRotate={true}
               autoRotate={autoRotate}
-              autoRotateSpeed={1}
+              autoRotateSpeed={0.5}
+              minDistance={2}
+              maxDistance={10}
             />
           )}
         </Canvas>
@@ -152,9 +251,7 @@ const Lung3DViewer = ({
       {activeCase?.prediction && (
         <div className="absolute bottom-4 left-4 bg-slate-900/80 backdrop-blur-sm rounded-lg px-4 py-2">
           <p className="text-sm text-white font-medium">{activeCase.prediction}</p>
-          {activeCase.affectedRegion && (
-            <p className="text-xs text-medical-500 mt-1">{activeCase.affectedRegion}</p>
-          )}
+          <p className="text-xs text-medical-500 mt-1">Affected region: {displayRegion}</p>
         </div>
       )}
     </div>

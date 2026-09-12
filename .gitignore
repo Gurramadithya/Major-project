@@ -19,6 +19,7 @@ build/
 
 # Logs
 *.log
+logs/
 
 # Python caches
 .pytest_cache/
@@ -27,3 +28,11 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Runtime data
+uploads/
+vector_db/
+reports/
+*.db
+dataset/
+models/

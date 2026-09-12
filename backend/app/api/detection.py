@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from ..ai.inference import validate_lung_xray_image
 from ..ai.services import DetectionService
 from ..config import logger
 from ..database.connection import SessionLocal
 from ..database.models import CaseRecord
+from ..llm.assistant import GeminiAssistant
+from ..rag.retriever import RAGRetriever
 from ..schemas import DetectionResponse
 
 router = APIRouter(prefix="/api/v1", tags=["detection"])
@@ -26,8 +31,29 @@ def detect_image(file: UploadFile = File(...), case_id: str | None = Form(None))
     finally:
         file.file.close()
 
+    if not validate_lung_xray_image(contents):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid image. Please upload a valid lung/chest X-ray.",
+        )
+
     result = service.predict(contents)
     logger.info("Detection completed with result %s", result)
+
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid image. Please upload a valid lung/chest X-ray.",
+        )
+
+    rag_results = RAGRetriever().search(result["prediction"], top_k=3)
+    assistant_result = GeminiAssistant().generate_response(
+        rag_results, result["prediction"], result["confidence"]
+    )
+    result["rag_context"] = "\n\n".join(
+        f"[{item['source']}] {item['content']}" for item in rag_results
+    )
+    result["assistant_response"] = assistant_result.get("response", "")
 
     db: Session = SessionLocal()
     try:
@@ -46,7 +72,7 @@ def detect_image(file: UploadFile = File(...), case_id: str | None = Form(None))
                 case_id=resolved_case_id,
                 filename=file.filename,
                 filepath="",
-                case_metadata={"source": "detection"},
+                case_metadata=json.dumps({"source": "detection"}),
             )
             db.add(record)
             db.commit()
@@ -57,8 +83,30 @@ def detect_image(file: UploadFile = File(...), case_id: str | None = Form(None))
         record.severity = result.get("severity", "unknown")
         record.organ = result.get("affected_organ", "unknown")
         record.recommendations = "\n".join(result.get("recommendations", []))
-        record.assistant_response = result.get("ai_explanation", "")
-        record.case_metadata = str({"source": "detection", "message": result.get("message", "")})
+        record.assistant_response = result.get("assistant_response", "")
+        record.rag_context = result.get("rag_context", "")
+        record.image_base64 = result.get("image_base64", "")
+        record.processing_time = result.get("processing_time", "")
+        record.ai_explanation = result.get("ai_explanation", "")
+        metadata = json.loads(record.case_metadata or "{}")
+        metadata.update({
+            "source": "detection",
+            "validation_result": "valid lung/chest X-ray",
+            "affected_region": result.get("affected_region", "unknown"),
+            "visualization_mode": result.get("visualization_mode", "none"),
+            "findings": result.get("findings", []),
+            "recommendations": result.get("recommendations", []),
+            "assistant_response": result.get("assistant_response", ""),
+            "rag_context": result.get("rag_context", ""),
+            "severity": result.get("severity", "unknown"),
+            "confidence": float(result.get("confidence", 0.0)),
+            "ai_explanation": result.get("ai_explanation", ""),
+            "project_title": "Medical AI Project",
+            "hospital_name": "Medical AI Platform",
+            "department": "Pulmonology" if (result.get("prediction") or "").lower() == "pneumonia" else "General Medicine",
+            "next_steps": result.get("recommendations", [])[:3],
+        })
+        record.case_metadata = json.dumps(metadata)
         db.commit()
     finally:
         db.close()

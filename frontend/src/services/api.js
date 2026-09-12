@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` : '/api/v1',
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
@@ -52,7 +52,7 @@ export const askAssistant = async ({ query, diseasePrediction, confidence }) => 
   confidence,
 });
 
-export const downloadReport = async (payload) => api.post('/reports/download', payload, {
+export const downloadReport = async (caseId) => api.get(`/reports/download/${caseId}`, {
   responseType: 'blob',
 });
 

@@ -1,7 +1,7 @@
-import Dashboard from './pages/Dashboard';
+import router from './router';
 
 function App() {
-  return <Dashboard />;
+  return router;
 }
 
 export default App;

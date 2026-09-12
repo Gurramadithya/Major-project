@@ -30,6 +30,18 @@ def generate_report_pdf(payload: dict[str, Any]) -> bytes:
 
     hospital_title = _safe_text(payload.get("hospital_name") or payload.get("project_title") or "Medical AI Report")
     generated_at = _safe_text(payload.get("generated_at") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    detection_name = _safe_text(payload.get("disease_prediction") or payload.get("prediction") or "Pending")
+    findings = payload.get("findings") or []
+    recommendations = payload.get("recommendations") or []
+    if isinstance(recommendations, str):
+        recommendations = [recommendations]
+    if not recommendations:
+        recommendations = ["No recommendations were provided."]
+    next_steps = payload.get("next_steps") or recommendations[:3] or ["Follow up as clinically indicated."]
+    if isinstance(next_steps, str):
+        next_steps = [next_steps]
+    rag_context = payload.get("rag_context") or payload.get("rag_medical_knowledge") or "No retrieval context was attached."
+    assistant_response = payload.get("assistant_response") or "No assistant response was attached."
 
     story = []
     story.append(Paragraph(hospital_title, title_style))
@@ -40,8 +52,11 @@ def generate_report_pdf(payload: dict[str, Any]) -> bytes:
 
     table_data = [
         ["Field", "Value"],
-        ["Disease prediction", _safe_text(payload.get("disease_prediction") or "Pending")],
-        ["Confidence", f"{payload.get('confidence', 0.0):.2%}"],
+        ["Project title", _safe_text(payload.get("project_title") or hospital_title)],
+        ["Detection result", detection_name],
+        ["Confidence", f"{float(payload.get('confidence', 0.0) or 0.0):.2%}"],
+        ["Severity", _safe_text(payload.get("severity") or "Unknown")],
+        ["Affected region", _safe_text(payload.get("affected_region") or "Unknown")],
         ["Processing time", _safe_text(payload.get("processing_time") or "N/A")],
         ["Suggested specialist", _safe_text(payload.get("suggested_specialist") or "Consult the referring clinician")],
     ]
@@ -63,12 +78,49 @@ def generate_report_pdf(payload: dict[str, Any]) -> bytes:
     story.append(table)
     story.append(Spacer(1, 0.18 * inch))
 
+    story.append(Paragraph("Uploaded Image & Validation", heading_style))
+    story.append(Paragraph(
+        f"Filename: {_safe_text(payload.get('filename') or 'N/A')}<br/>"
+        f"Validation: {_safe_text(payload.get('validation_result') or 'N/A')}<br/>"
+        f"Image date/time: {_safe_text(payload.get('analysis_date') or generated_at)}",
+        body_style,
+    ))
+    story.append(Spacer(1, 0.12 * inch))
+
+    story.append(Paragraph("Overall Summary", heading_style))
+    story.append(Paragraph(_safe_text(payload.get("overall_summary") or f"{detection_name} result generated on {generated_at}."), body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
+    story.append(Paragraph("Detection Findings", heading_style))
+    for item in findings:
+        story.append(Paragraph(f"• {_safe_text(item)}", body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
     story.append(Paragraph("AI Explanation", heading_style))
     story.append(Paragraph(_safe_text(payload.get("ai_explanation") or "No explanation was provided."), body_style))
     story.append(Spacer(1, 0.12 * inch))
 
+    story.append(Paragraph("Clinical Recommendations", heading_style))
+    for item in recommendations:
+        story.append(Paragraph(f"• {_safe_text(item)}", body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
+    story.append(Paragraph("Suggested Next Steps", heading_style))
+    for item in next_steps:
+        story.append(Paragraph(f"• {_safe_text(item)}", body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
     story.append(Paragraph("RAG Medical Knowledge", heading_style))
-    story.append(Paragraph(_safe_text(payload.get("rag_medical_knowledge") or "No retrieval context was attached."), body_style))
+    story.append(Paragraph(_safe_text(rag_context), body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
+    story.append(Paragraph("AI Assistant Summary", heading_style))
+    story.append(Paragraph(_safe_text(assistant_response), body_style))
+    story.append(Spacer(1, 0.12 * inch))
+
+    story.append(Paragraph("3D Anatomy Information", heading_style))
+    visualization_note = "Illustrative demo mapping; not a medical localization." if payload.get("visualization_mode") == "illustrative" else "Current model-based region display when available."
+    story.append(Paragraph(f"Affected region: {_safe_text(payload.get('affected_region') or 'Unknown')}<br/>Highlight description: {visualization_note}", body_style))
 
     image_b64 = payload.get("image_base64")
     if image_b64:
@@ -83,7 +135,7 @@ def generate_report_pdf(payload: dict[str, Any]) -> bytes:
             story.append(Paragraph("The uploaded image could not be embedded.", small_style))
 
     story.append(Spacer(1, 0.3 * inch))
-    story.append(Paragraph("This report is AI-generated and should not replace professional medical advice.", small_style))
+    story.append(Paragraph(_safe_text(payload.get("medical_disclaimer") or "This is an AI-assisted academic/demo report and is not a substitute for professional medical diagnosis or treatment."), small_style))
 
     doc.build(story)
     return buffer.getvalue()

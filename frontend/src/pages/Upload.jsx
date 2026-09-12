@@ -24,7 +24,7 @@ const Upload = () => {
     setProgress(0);
   };
 
-  const validateFile = (file) => {
+  const validateFile = async (file) => {
     if (!file) {
       return 'Please select an image file.';
     }
@@ -38,12 +38,53 @@ const Upload = () => {
       return 'File exceeds the 10MB limit.';
     }
 
-    return '';
+    try {
+      const imageUrl = URL.createObjectURL(file);
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Unable to decode image'));
+        img.src = imageUrl;
+      });
+      URL.revokeObjectURL(imageUrl);
+
+      const naturalWidth = image.naturalWidth || image.width;
+      const naturalHeight = image.naturalHeight || image.height;
+      const aspectRatio = naturalHeight / naturalWidth;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(200, naturalWidth);
+      canvas.height = Math.min(200, naturalHeight);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let graySum = 0;
+      let saturationSum = 0;
+      let pixelCount = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const saturation = max === 0 ? 0 : ((max - min) / max) * 100;
+        graySum += (r + g + b) / 3;
+        saturationSum += saturation;
+        pixelCount += 1;
+      }
+      const meanGray = graySum / pixelCount;
+      const meanSaturation = saturationSum / pixelCount;
+      if (naturalWidth < 300 || naturalHeight < 300 || aspectRatio < 0.6 || aspectRatio > 2.5 || meanGray < 15 || meanGray > 245 || meanSaturation > 28) {
+        return 'Invalid image. Please upload a valid lung/chest X-ray.';
+      }
+      return '';
+    } catch (error) {
+      return 'Invalid image. Please upload a valid lung/chest X-ray.';
+    }
   };
 
-  const handleFileSelection = (file) => {
+  const handleFileSelection = async (file) => {
     resetState();
-    const validationError = validateFile(file);
+    const validationError = await validateFile(file);
     if (validationError) {
       setError(validationError);
       setSelectedFile(null);

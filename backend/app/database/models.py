@@ -27,6 +27,11 @@ class CaseRecord(Base):
     image_base64 = Column(Text, nullable=True)
     case_metadata = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Additional fields for report generation
+    processing_time = Column(String(50), nullable=True)
+    ai_explanation = Column(Text, nullable=True)
+    rag_context = Column(Text, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
