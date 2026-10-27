@@ -18,7 +18,7 @@ from .model import get_model
 
 
 def validate_lung_xray_image(image_bytes: bytes) -> bool:
-    """Accept genuine chest radiographs while rejecting obvious non-chest images and noise."""
+    """Strict validation to accept only chest X-ray images and reject all others."""
     try:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         rgb = np.asarray(image)
@@ -26,38 +26,57 @@ def validate_lung_xray_image(image_bytes: bytes) -> bool:
             return False
 
         h, w, _ = rgb.shape
-        # More permissive resolution check
-        if min(h, w) < 100 or max(h, w) > 5000:
+        # Strict resolution check - chest X-rays are typically 512x512 to 2048x2048
+        if min(h, w) < 256 or max(h, w) > 4096:
             return False
-        # More permissive aspect ratio
-        if not 0.3 <= (h / w) <= 4.0:
+        # Strict aspect ratio - chest X-rays are typically portrait or near-square
+        if not 0.6 <= (h / w) <= 1.8:
             return False
 
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        if gray.size == 0 or np.std(gray) < 3:
+        if gray.size == 0 or np.std(gray) < 10:
             return False
 
         mean_intensity = float(np.mean(gray))
-        if mean_intensity < 5 or mean_intensity > 255:
+        # Chest X-rays have specific intensity range (darker lung fields)
+        if mean_intensity < 30 or mean_intensity > 200:
             return False
 
-        # More permissive contrast check
+        # Strict contrast check - chest X-rays need good contrast
         contrast = float(np.percentile(gray, 95) - np.percentile(gray, 5))
-        if contrast < 8:
+        if contrast < 40 or contrast > 180:
             return False
 
-        # More permissive saturation check
+        # Strict saturation check - chest X-rays are grayscale/low saturation
         saturation = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[:, :, 1]
-        if float(np.percentile(saturation, 90)) > 50:
+        if float(np.percentile(saturation, 90)) > 30:
             return False
 
-        # More permissive edge density check
+        # Strict edge density check - chest X-rays have specific edge patterns
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
+        edges = cv2.Canny(blur, 30, 100)
         edge_density = float(np.mean(edges > 0))
-        if edge_density > 0.25:
+        if edge_density > 0.15 or edge_density < 0.002:
             return False
-        if edge_density < 0.0001 and contrast < 15:
+
+        # Check for chest X-ray specific patterns - lung fields should be darker
+        # Split image into thirds (upper lung fields, heart area, lower lung fields)
+        h_third = h // 3
+        upper_third = gray[:h_third, :]
+        middle_third = gray[h_third:2*h_third, :]
+        lower_third = gray[2*h_third:, :]
+        
+        upper_mean = float(np.mean(upper_third))
+        middle_mean = float(np.mean(middle_third))
+        lower_mean = float(np.mean(lower_third))
+        
+        # Heart area (middle) should be brighter than lung fields
+        if not (middle_mean > upper_mean * 1.1 or middle_mean > lower_mean * 1.1):
+            return False
+        
+        # Check for reasonable intensity variation across the image
+        overall_std = float(np.std(gray))
+        if overall_std < 25 or overall_std > 80:
             return False
 
         return True

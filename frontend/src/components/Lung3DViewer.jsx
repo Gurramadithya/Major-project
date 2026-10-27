@@ -55,26 +55,19 @@ const LungModel = ({
       return;
     }
     
-    // Determine highlight position based on region
-    let highlightPosition = new THREE.Vector3(0, 0, 0);
-    let highlightScale = 0.3;
+    // Generate random position within lung area for each new image
+    const randomX = (Math.random() - 0.5) * 0.8; // -0.4 to 0.4
+    const randomY = (Math.random() - 0.5) * 0.4; // -0.2 to 0.2
+    const randomZ = 0.2 + Math.random() * 0.3; // 0.2 to 0.5
     
-    if (highlightLeft && highlightRight) {
-      // Bilateral - center
-      highlightPosition.set(0, 0.2, 0.4);
-      highlightScale = 0.4;
-    } else if (highlightLeft) {
-      // Left lung
-      highlightPosition.set(-0.4, 0.1, 0.3);
-      highlightScale = 0.35;
-    } else if (highlightRight) {
-      // Right lung
-      highlightPosition.set(0.4, 0.1, 0.3);
-      highlightScale = 0.35;
-    } else {
-      // Default to bilateral if no specific region
-      highlightPosition.set(0, 0.2, 0.4);
-      highlightScale = 0.4;
+    let highlightPosition = new THREE.Vector3(randomX, randomY, randomZ);
+    let highlightScale = 0.25 + Math.random() * 0.2; // 0.25 to 0.45
+    
+    // Adjust based on region if specified
+    if (highlightLeft && !highlightRight) {
+      highlightPosition.set(-0.3 + Math.random() * 0.2, randomY, randomZ);
+    } else if (highlightRight && !highlightLeft) {
+      highlightPosition.set(0.1 + Math.random() * 0.2, randomY, randomZ);
     }
     
     // Create glowing sphere

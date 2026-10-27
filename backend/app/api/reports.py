@@ -53,7 +53,7 @@ def download_report(case_id: str):
             f"and affected region {metadata.get('affected_region', 'unknown')} ."
         )
         suggested_specialist = metadata.get("department") or ("Pulmonologist" if (record.prediction or "").lower() == "pneumonia" else "General Physician")
-        rag_context = metadata.get("rag_context") or record.rag_context or "No retrieval context provided."
+        rag_context = metadata.get("rag_context") or "No retrieval context provided."
         report_data = {
             "case_id": record.case_id,
             "project_title": metadata.get("project_title") or "Medical AI Project",
@@ -62,8 +62,8 @@ def download_report(case_id: str):
             "prediction": record.prediction or "Unknown",
             "confidence": float(record.confidence) if record.confidence else 0.0,
             "severity": metadata.get("severity") or record.severity or "Unknown",
-            "processing_time": record.processing_time or "N/A",
-            "ai_explanation": metadata.get("ai_explanation") or record.ai_explanation or "No explanation provided.",
+            "processing_time": metadata.get("processing_time") or "N/A",
+            "ai_explanation": metadata.get("ai_explanation") or "No explanation provided.",
             "rag_medical_knowledge": rag_context,
             "rag_context": rag_context,
             "suggested_specialist": suggested_specialist,
